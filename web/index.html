@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Facebook Story Downloader Pro</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="box">
+<h1>📥 Facebook Story Downloader Pro</h1>
+<form method="post">
+<input name="url" placeholder="ضع رابط القصة هنا" required>
+<button>تحليل القصة</button>
+</form>
+{% if result %}
+<p>تم استلام الرابط:</p>
+<small>{{ result.url }}</small>
+<p>سيتم إضافة وحدة استخراج المقاطع في المرحلة القادمة.</p>
+{% endif %}
+</div>
+</body>
+</html>
