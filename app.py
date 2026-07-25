@@ -91,7 +91,13 @@ def analyze_story():
         extraction_method=discovered.get("method", "unknown"),
         title=discovered.get("title") or "قصة فيسبوك",
     )
-    return jsonify({"ok": True, "job": job})
+    return jsonify(
+        {
+            "ok": True,
+            "job": job,
+            "warning": discovered.get("sequence_warning"),
+        }
+    )
 
 
 @app.get("/api/jobs/<job_id>")
