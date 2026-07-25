@@ -177,6 +177,35 @@ def _click_next(page) -> bool:
         return False
 
 
+def _click_previous(page) -> bool:
+    patterns = [
+        re.compile(r"^Previous$", re.I),
+        re.compile(r"Previous (card|photo|video|story)", re.I),
+        re.compile(r"^(السابق|القصة السابقة)$", re.I),
+        re.compile(r"^Föregående", re.I),
+    ]
+    for pattern in patterns:
+        locator = page.get_by_role("button", name=pattern)
+        try:
+            count = locator.count()
+        except Exception:
+            count = 0
+        for index in range(count - 1, -1, -1):
+            button = locator.nth(index)
+            try:
+                if button.is_visible() and button.is_enabled():
+                    button.click(timeout=1500)
+                    return True
+            except Exception:
+                continue
+
+    try:
+        page.keyboard.press("ArrowLeft")
+        return True
+    except Exception:
+        return False
+
+
 def _wait_for_change(
     page, previous: str, responses: deque[dict], seen_urls: set[str]
 ) -> bool:
@@ -193,11 +222,27 @@ def _wait_for_change(
     return False
 
 
+def _rewind_to_first(page, responses: deque[dict], max_items: int) -> None:
+    """Move from a shared middle card to the earliest available story card."""
+    empty_seen: set[str] = set()
+    unchanged_steps = 0
+    for _ in range(max_items):
+        fingerprint, _ = _current_fingerprint(page, responses, empty_seen)
+        if not _click_previous(page):
+            break
+        if _wait_for_change(page, fingerprint, responses, empty_seen):
+            unchanged_steps = 0
+        else:
+            unchanged_steps += 1
+            if unchanged_steps >= 2:
+                break
+
+
 def extract_story_sequence(url: str) -> dict:
     """Enumerate visible Facebook story cards in the browser viewer.
 
-    Opens the story viewer, captures the largest visible media element,
-    advances to the next card, and stops when the card no longer changes.
+    Opens the story viewer, rewinds to the earliest available card, captures
+    each visible media item, advances to the next card, and stops at the end.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -265,6 +310,9 @@ def extract_story_sequence(url: str) -> dict:
                 raise BrowserStoryError(
                     "Facebook طلب تسجيل الدخول. أضف ملف cookies.txt صالحًا ثم أعد التحليل."
                 )
+
+            _rewind_to_first(page, responses, max_items)
+            page.wait_for_timeout(700)
 
             unchanged_steps = 0
             for _ in range(max_items):
