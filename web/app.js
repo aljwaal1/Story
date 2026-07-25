@@ -24,7 +24,7 @@
     }
     function setLoading(isLoading) {
         analyzeButton.disabled = isLoading; input.disabled = isLoading;
-        analyzeButton.querySelector("span").textContent = isLoading ? "جارٍ التحليل..." : "تحليل القصة";
+        analyzeButton.querySelector("span").textContent = isLoading ? "جارٍ فحص جميع أجزاء الستوري..." : "تحليل القصة";
         analyzeButton.classList.toggle("loading", isLoading);
     }
     const itemLabel = (item) => item.type === "video" ? "فيديو" : "صورة";
@@ -52,7 +52,13 @@
         event.preventDefault(); clearStatus(); setLoading(true); resultsPanel.hidden = true;
         try {
             const data = await api("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: input.value.trim() }) });
-            renderJob(data.job); showStatus(`تم اكتشاف ${data.job.item_count} عنصرًا بنجاح.`, "success"); await loadHistory();
+            renderJob(data.job);
+            if (data.warning) {
+                showStatus(`تم اكتشاف ${data.job.item_count} عنصرًا، لكن فحص بقية أجزاء الستوري لم يكتمل: ${data.warning}`, "info");
+            } else {
+                showStatus(`تم اكتشاف ${data.job.item_count} عنصرًا بنجاح.`, "success");
+            }
+            await loadHistory();
         } catch (error) { showStatus(error.message, "error"); } finally { setLoading(false); }
     }
     async function downloadMerge() {
