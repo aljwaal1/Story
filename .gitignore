@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+cookies.txt
+data/
+downloads/
+*.part
+*.zip
+story_*_merged.mp4

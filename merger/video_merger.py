@@ -1,12 +1,10 @@
-"""Video merge placeholder.
+from __future__ import annotations
 
-Will be connected to ffmpeg in next stage.
-"""
+from pathlib import Path
+
+from .ffmpeg_merge import merge_with_ffmpeg
 
 
-def merge_videos(files, output="story_final.mp4"):
-    return {
-        "output": output,
-        "files": files,
-        "status": "ready_for_ffmpeg"
-    }
+def merge_videos(files: list[str], output: str = "story_final.mp4") -> dict:
+    merged = merge_with_ffmpeg([Path(file) for file in files], Path(output))
+    return {"output": str(merged), "files": files, "status": "completed"}
