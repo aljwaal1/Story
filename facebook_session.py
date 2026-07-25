@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from extractor.browser_story import launch_story_browser
@@ -8,6 +9,11 @@ BASE_DIR = Path(__file__).resolve().parent
 AUTH_DIR = BASE_DIR / ".auth"
 STATE_FILE = AUTH_DIR / "facebook_state.json"
 COOKIES_FILE = BASE_DIR / "cookies.txt"
+FACEBOOK_COOKIE_URLS = [
+    "https://www.facebook.com/",
+    "https://web.facebook.com/",
+    "https://m.facebook.com/",
+]
 
 
 def _write_netscape_cookies(cookies: list[dict], path: Path) -> None:
@@ -50,6 +56,33 @@ def _write_netscape_cookies(cookies: list[dict], path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _wait_for_facebook_login(context, timeout_seconds: float = 30.0) -> list[dict]:
+    """Wait for Facebook's login cookie without forcing another navigation."""
+    deadline = time.monotonic() + timeout_seconds
+    last_cookies: list[dict] = []
+
+    while time.monotonic() < deadline:
+        try:
+            last_cookies = context.cookies(FACEBOOK_COOKIE_URLS)
+        except Exception:
+            last_cookies = []
+
+        if any(
+            cookie.get("name") == "c_user" and cookie.get("value")
+            for cookie in last_cookies
+        ):
+            # Allow Facebook's automatic www/web redirect to finish writing cookies.
+            time.sleep(1.0)
+            try:
+                return context.cookies(FACEBOOK_COOKIE_URLS)
+            except Exception:
+                return last_cookies
+
+        time.sleep(0.5)
+
+    return last_cookies
+
+
 def save_facebook_session() -> tuple[Path, Path]:
     try:
         from playwright.sync_api import sync_playwright
@@ -79,14 +112,7 @@ def save_facebook_session() -> tuple[Path, Path]:
         print()
         input("Press Enter after login is complete...")
 
-        page.goto(
-            "https://www.facebook.com/",
-            wait_until="domcontentloaded",
-            timeout=60_000,
-        )
-        page.wait_for_timeout(1500)
-
-        cookies = context.cookies(["https://www.facebook.com/"])
+        cookies = _wait_for_facebook_login(context)
         logged_in = any(
             cookie.get("name") == "c_user" and cookie.get("value")
             for cookie in cookies
