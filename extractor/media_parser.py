@@ -1,23 +1,30 @@
-import json
+from __future__ import annotations
+
+import re
+from urllib.parse import urlparse
 
 
-def normalize_items(items):
-    """Normalize discovered story media items.
+def _clean_extension(value: str | None, media_type: str) -> str:
+    extension = re.sub(r"[^a-zA-Z0-9]", "", value or "").lower()
+    if extension:
+        return extension
+    return "mp4" if media_type == "video" else "jpg"
 
-    Each item format:
-    {type: video/image, url: media_url, order: number}
-    """
-    result = []
+
+def normalize_items(items: list[dict]) -> list[dict]:
+    result: list[dict] = []
     for index, item in enumerate(items, start=1):
+        media_url = str(item.get("url") or "").strip()
+        if not media_url:
+            continue
+        media_type = "video" if item.get("type") == "video" else "image"
+        extension = _clean_extension(item.get("extension"), media_type)
         result.append({
-            "order": index,
-            "type": item.get("type", "unknown"),
-            "url": item.get("url")
+            "id": f"item-{index:02d}", "order": index, "type": media_type, "url": media_url,
+            "source_url": item.get("source_url"),
+            "title": str(item.get("title") or f"عنصر القصة {index}")[:200],
+            "extension": extension, "filename": f"story_{index:02d}.{extension}",
+            "thumbnail": item.get("thumbnail"), "duration": item.get("duration"),
+            "http_headers": item.get("http_headers") or {}, "host": urlparse(media_url).hostname,
         })
     return result
-
-
-def export_manifest(items, path="story_manifest.json"):
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(items, file, ensure_ascii=False, indent=2)
-    return path

@@ -1,14 +1,215 @@
-from flask import Flask, render_template, request
+from __future__ import annotations
 
-app = Flask(__name__, template_folder='web')
+import os
+import shutil
+import zipfile
+from pathlib import Path
 
-@app.route('/', methods=['GET', 'POST'])
+from flask import Flask, jsonify, render_template, request, send_file
+from werkzeug.exceptions import HTTPException
+
+from downloader.media_downloader import DownloadError, download_item
+from extractor.facebook_story import StoryExtractionError, discover_media
+from extractor.media_parser import normalize_items
+from merger.ffmpeg_merge import MergeError, merge_with_ffmpeg
+from storage import JobNotFoundError, JobStore
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(os.getenv("STORY_DATA_DIR", BASE_DIR / "data"))
+DOWNLOADS_DIR = Path(os.getenv("STORY_DOWNLOADS_DIR", BASE_DIR / "downloads"))
+
+app = Flask(
+    __name__,
+    template_folder="web",
+    static_folder="web",
+    static_url_path="/static",
+)
+app.config.update(
+    JSON_AS_ASCII=False,
+    MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+)
+
+store = JobStore(DATA_DIR)
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _payload() -> dict:
+    return request.get_json(silent=True) or request.form.to_dict()
+
+
+def _job_download_dir(job_id: str) -> Path:
+    path = (DOWNLOADS_DIR / job_id).resolve()
+    if DOWNLOADS_DIR.resolve() not in path.parents:
+        raise JobNotFoundError("معرّف العملية غير صالح.")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _download_one(job_id: str, order: int) -> tuple[Path, dict]:
+    job = store.get_job(job_id)
+    item = next((entry for entry in job["items"] if entry["order"] == order), None)
+    if not item:
+        raise JobNotFoundError("عنصر القصة المطلوب غير موجود.")
+
+    folder = _job_download_dir(job_id)
+    existing_name = item.get("downloaded_name")
+    if existing_name:
+        existing = folder / existing_name
+        if existing.is_file():
+            return existing, item
+
+    path = download_item(item, folder)
+    item["downloaded_name"] = path.name
+    item["downloaded_size"] = path.stat().st_size
+    store.replace_item(job_id, item)
+    store.add_event(job_id, "download", f"تم تحميل العنصر رقم {order}")
+    return path, item
+
+
+@app.get("/")
 def index():
-    result = None
-    if request.method == 'POST':
-        url = request.form.get('url', '')
-        result = {'url': url, 'items': []}
-    return render_template('index.html', result=result)
+    return render_template("index.html", history=store.list_jobs(limit=20))
 
-if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+
+@app.post("/api/analyze")
+def analyze_story():
+    url = str(_payload().get("url", "")).strip()
+    if not url:
+        return jsonify({"ok": False, "error": "أدخل رابط القصة أولًا."}), 400
+
+    discovered = discover_media(url)
+    items = normalize_items(discovered.get("items", []))
+    if not items:
+        raise StoryExtractionError(
+            "لم يتم العثور على صور أو فيديوهات قابلة للتحميل. "
+            "قد تكون القصة منتهية أو خاصة أو تحتاج إلى ملف cookies.txt."
+        )
+
+    job = store.create_job(
+        source_url=url,
+        items=items,
+        extraction_method=discovered.get("method", "unknown"),
+        title=discovered.get("title") or "قصة فيسبوك",
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "job": job,
+            "warning": discovered.get("sequence_warning"),
+        }
+    )
+
+
+@app.get("/api/jobs/<job_id>")
+def get_job(job_id: str):
+    return jsonify({"ok": True, "job": store.get_job(job_id)})
+
+
+@app.get("/api/jobs/<job_id>/download/<int:order>")
+def download_single(job_id: str, order: int):
+    path, item = _download_one(job_id, order)
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=path.name,
+        mimetype=item.get("mime_type") or None,
+        max_age=0,
+    )
+
+
+@app.get("/api/jobs/<job_id>/download-all")
+def download_all(job_id: str):
+    job = store.get_job(job_id)
+    folder = _job_download_dir(job_id)
+    files: list[Path] = []
+    failures: list[str] = []
+
+    for item in job["items"]:
+        try:
+            path, _ = _download_one(job_id, item["order"])
+            files.append(path)
+        except (DownloadError, OSError) as exc:
+            failures.append(f"العنصر {item['order']}: {exc}")
+
+    if not files:
+        raise DownloadError("تعذر تحميل أي عنصر من القصة.")
+
+    archive_path = folder / f"story_{job_id}.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in files:
+            archive.write(path, arcname=path.name)
+        if failures:
+            archive.writestr("download_errors.txt", "\n".join(failures))
+
+    store.add_event(job_id, "download_all", f"تم تجهيز {len(files)} ملفًا")
+    return send_file(
+        archive_path,
+        as_attachment=True,
+        download_name=archive_path.name,
+        mimetype="application/zip",
+        max_age=0,
+    )
+
+
+@app.post("/api/jobs/<job_id>/merge")
+def merge_videos(job_id: str):
+    job = store.get_job(job_id)
+    video_items = [item for item in job["items"] if item.get("type") == "video"]
+    if len(video_items) < 2:
+        raise MergeError("الدمج يحتاج إلى مقطعين فيديو على الأقل.")
+
+    folder = _job_download_dir(job_id)
+    video_paths: list[Path] = []
+    for item in video_items:
+        path, _ = _download_one(job_id, item["order"])
+        video_paths.append(path)
+
+    output = folder / f"story_{job_id}_merged.mp4"
+    merged_path = merge_with_ffmpeg(video_paths, output)
+    store.add_event(job_id, "merge", f"تم دمج {len(video_paths)} مقاطع")
+    return send_file(
+        merged_path,
+        as_attachment=True,
+        download_name=merged_path.name,
+        mimetype="video/mp4",
+        max_age=0,
+    )
+
+
+@app.get("/api/history")
+def history():
+    return jsonify({"ok": True, "history": store.list_jobs(limit=50)})
+
+
+@app.delete("/api/jobs/<job_id>")
+def delete_job(job_id: str):
+    store.delete_job(job_id)
+    shutil.rmtree(DOWNLOADS_DIR / job_id, ignore_errors=True)
+    return jsonify({"ok": True})
+
+
+@app.errorhandler(StoryExtractionError)
+@app.errorhandler(DownloadError)
+@app.errorhandler(MergeError)
+@app.errorhandler(JobNotFoundError)
+def handle_app_error(exc: Exception):
+    return jsonify({"ok": False, "error": str(exc)}), 422
+
+
+@app.errorhandler(HTTPException)
+def handle_http_error(exc: HTTPException):
+    return jsonify({"ok": False, "error": exc.description}), exc.code
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc: Exception):
+    app.logger.exception("Unexpected application error")
+    return jsonify({"ok": False, "error": "حدث خطأ غير متوقع داخل التطبيق."}), 500
+
+
+if __name__ == "__main__":
+    app.run(
+        host=os.getenv("STORY_HOST", "127.0.0.1"),
+        port=int(os.getenv("STORY_PORT", "5000")),
+        debug=os.getenv("STORY_DEBUG", "0") == "1",
+    )

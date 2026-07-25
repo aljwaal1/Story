@@ -1,22 +1,38 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8">
-<title>Facebook Story Downloader Pro</title>
-<link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#111827">
+    <title>Story Downloader Pro</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-<div class="box">
-<h1>📥 Facebook Story Downloader Pro</h1>
-<form method="post">
-<input name="url" placeholder="ضع رابط القصة هنا" required>
-<button>تحليل القصة</button>
-</form>
-{% if result %}
-<p>تم استلام الرابط:</p>
-<small>{{ result.url }}</small>
-<p>سيتم إضافة وحدة استخراج المقاطع في المرحلة القادمة.</p>
-{% endif %}
+<div class="page-shell">
+<header class="hero">
+    <div class="brand-mark"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v2h14v-2"/></svg></div>
+    <div class="hero-copy"><span class="eyebrow">أداة محلية • واجهة عربية • تنزيل منظم</span><h1>Story Downloader <strong>Pro</strong></h1><p>حلّل رابط قصة Facebook العامة، شاهد جميع العناصر المكتشفة، ثم نزّل كل ملف منفصلًا أو اجمعها في حزمة واحدة.</p></div>
+    <div class="privacy-badge"><span class="privacy-dot"></span>البيانات محفوظة محليًا على جهازك</div>
+</header>
+<main>
+<section class="panel analyzer-panel">
+    <div class="section-heading"><div><span class="section-kicker">الخطوة الأولى</span><h2>ضع رابط القصة</h2></div><span class="supported-pill">Facebook Stories</span></div>
+    <form id="analyze-form" class="url-form"><label class="url-field"><span class="field-icon"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg></span><input id="story-url" name="url" type="url" placeholder="https://www.facebook.com/stories/..." required></label><button id="analyze-button" class="primary-button" type="submit"><span>تحليل القصة</span><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button></form>
+    <div id="status-box" class="status-box" hidden aria-live="polite"></div>
+    <div class="help-strip"><div><span>1</span> الصق رابط القصة العامة</div><div><span>2</span> انتظر اكتشاف العناصر</div><div><span>3</span> نزّل ما تحتاجه</div></div>
+</section>
+<section id="results-panel" class="panel results-panel" hidden>
+    <div class="section-heading results-heading"><div><span class="section-kicker">نتيجة التحليل</span><h2>عناصر القصة</h2><p id="results-summary" class="section-description"></p></div><div class="result-actions"><a id="download-all-button" class="secondary-button" href="#"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v2h14v-2"/></svg>تحميل الكل ZIP</a><button id="merge-button" class="ghost-button" type="button" hidden><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>دمج الفيديوهات اختياريًا</button></div></div>
+    <div id="story-items" class="story-grid"></div>
+</section>
+<section class="panel history-panel">
+    <div class="section-heading"><div><span class="section-kicker">سجل محلي</span><h2>آخر عمليات التحميل</h2></div><button id="refresh-history" class="icon-button" type="button"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button></div>
+    <div id="history-list" class="history-list">{% if history %}{% for job in history %}<article class="history-row"><div class="history-icon"><span>{{ job.item_count }}</span></div><div class="history-copy"><strong>{{ job.title }}</strong><small>{{ job.video_count }} فيديو • {{ job.image_count }} صورة</small></div><time datetime="{{ job.updated_at }}" data-iso-date="{{ job.updated_at }}">{{ job.updated_at }}</time><button class="history-open ghost-button compact" type="button" data-job-id="{{ job.id }}">فتح</button><button class="history-delete icon-button danger" type="button" data-job-id="{{ job.id }}"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M9 7V4h6v3m-9 0 1 14h10l1-14"/></svg></button></article>{% endfor %}{% else %}<div class="empty-state">لا توجد عمليات محفوظة بعد.</div>{% endif %}</div>
+</section>
+</main>
+<footer>استخدم الأداة فقط للمحتوى العام أو المحتوى الذي تملك حق تنزيله.</footer>
 </div>
+<template id="item-template"><article class="story-card"><div class="media-preview"><img class="item-thumbnail" alt="" hidden><div class="media-placeholder"><svg class="video-symbol" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></svg><svg class="image-symbol" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 16l4-4 3 3 2-2 7 6M8 9h.01"/></svg></div><span class="media-type"></span><span class="media-order"></span></div><div class="story-card-body"><div><h3 class="item-title"></h3><p class="item-meta"></p></div><a class="download-item primary-button compact" href="#"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v2h14v-2"/></svg>تحميل الملف</a></div></article></template>
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </body>
 </html>
