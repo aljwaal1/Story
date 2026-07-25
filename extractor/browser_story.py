@@ -34,29 +34,36 @@ def sequence_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
 
 
+def _compact_error(exc: Exception, limit: int = 700) -> str:
+    text = re.sub(r"\s+", " ", str(exc)).strip()
+    if not text:
+        text = exc.__class__.__name__
+    return text[:limit]
+
+
 def _looks_like_direct_media(url: str | None) -> bool:
     if not url:
         return False
     value = url.lower()
-    if value.startswith(("blob:", "data:")):
-        return False
-    return value.startswith(("http://", "https://"))
+    return not value.startswith(("blob:", "data:")) and value.startswith(
+        ("http://", "https://")
+    )
 
 
 def _media_extension(url: str, media_type: str, content_type: str = "") -> str:
     content_type = content_type.lower()
-    if "video/mp4" in content_type:
-        return "mp4"
-    if "video/webm" in content_type:
-        return "webm"
-    if "image/png" in content_type:
-        return "png"
-    if "image/webp" in content_type:
-        return "webp"
-    if "image/gif" in content_type:
-        return "gif"
-    path = urlsplit(url).path.lower()
-    match = re.search(r"\.([a-z0-9]{2,5})$", path)
+    content_extensions = {
+        "video/mp4": "mp4",
+        "video/webm": "webm",
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/gif": "gif",
+    }
+    for prefix, extension in content_extensions.items():
+        if prefix in content_type:
+            return extension
+    match = re.search(r"\.([a-z0-9]{2,5})$", urlsplit(url).path.lower())
     if match:
         return match.group(1)
     return "mp4" if media_type == "video" else "jpg"
@@ -66,11 +73,8 @@ def _latest_network_media(
     responses: deque[dict], media_type: str, already_seen: set[str]
 ) -> dict | None:
     for response in reversed(responses):
-        if response["type"] != media_type:
-            continue
-        if response["url"] in already_seen:
-            continue
-        return response
+        if response["type"] == media_type and response["url"] not in already_seen:
+            return response
     return None
 
 
@@ -79,10 +83,10 @@ def _visible_media(page) -> dict | None:
         """
         () => {
           const candidates = [];
-          const viewportCenterX = window.innerWidth / 2;
-          const viewportCenterY = window.innerHeight / 2;
+          const cx = window.innerWidth / 2;
+          const cy = window.innerHeight / 2;
 
-          function addCandidate(el, type) {
+          function add(el, type) {
             const rect = el.getBoundingClientRect();
             const style = getComputedStyle(el);
             if (
@@ -93,11 +97,9 @@ def _visible_media(page) -> dict | None:
               rect.top >= window.innerHeight || rect.left >= window.innerWidth
             ) return;
 
-            const centerX = rect.left + rect.width / 2;
-            const centerY = rect.top + rect.height / 2;
-            const distance = Math.hypot(centerX - viewportCenterX, centerY - viewportCenterY);
-            const area = rect.width * rect.height;
-            const centerBonus = 1 / (1 + distance / 1000);
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const distance = Math.hypot(x - cx, y - cy);
             const src = type === 'video'
               ? (el.currentSrc || el.src || el.querySelector('source')?.src || '')
               : (el.currentSrc || el.src || '');
@@ -108,12 +110,12 @@ def _visible_media(page) -> dict | None:
               poster: type === 'video' ? (el.poster || '') : '',
               width: Math.round(rect.width),
               height: Math.round(rect.height),
-              score: area * centerBonus,
+              score: (rect.width * rect.height) / (1 + distance / 1000),
             });
           }
 
-          document.querySelectorAll('video').forEach((el) => addCandidate(el, 'video'));
-          document.querySelectorAll('img').forEach((el) => addCandidate(el, 'image'));
+          document.querySelectorAll('video').forEach((el) => add(el, 'video'));
+          document.querySelectorAll('img').forEach((el) => add(el, 'image'));
           candidates.sort((a, b) => b.score - a.score);
           return candidates[0] || null;
         }
@@ -121,7 +123,7 @@ def _visible_media(page) -> dict | None:
     )
 
 
-def _current_fingerprint(
+def _current_snapshot(
     page, responses: deque[dict], seen_urls: set[str]
 ) -> tuple[str, dict | None]:
     visible = _visible_media(page)
@@ -135,7 +137,7 @@ def _current_fingerprint(
         network = _latest_network_media(responses, media_type, seen_urls)
         source = network["url"] if network else source
 
-    fingerprint = source if source else (
+    fingerprint = source or (
         f"{page.url}|{media_type}|{visible.get('width')}x{visible.get('height')}"
     )
     return fingerprint, {
@@ -148,13 +150,24 @@ def _current_fingerprint(
     }
 
 
-def _click_next(page) -> bool:
-    patterns = [
-        re.compile(r"^Next$", re.I),
-        re.compile(r"Next (card|photo|video|story)", re.I),
-        re.compile(r"^(التالي|القصة التالية)$", re.I),
-        re.compile(r"^Nästa", re.I),
-    ]
+def _click_direction(page, direction: str) -> bool:
+    if direction == "next":
+        patterns = [
+            re.compile(r"^Next$", re.I),
+            re.compile(r"Next (card|photo|video|story)", re.I),
+            re.compile(r"^(التالي|القصة التالية)$", re.I),
+            re.compile(r"^Nästa", re.I),
+        ]
+        key = "ArrowRight"
+    else:
+        patterns = [
+            re.compile(r"^Previous$", re.I),
+            re.compile(r"Previous (card|photo|video|story)", re.I),
+            re.compile(r"^(السابق|القصة السابقة)$", re.I),
+            re.compile(r"^Föregående", re.I),
+        ]
+        key = "ArrowLeft"
+
     for pattern in patterns:
         locator = page.get_by_role("button", name=pattern)
         try:
@@ -171,36 +184,7 @@ def _click_next(page) -> bool:
                 continue
 
     try:
-        page.keyboard.press("ArrowRight")
-        return True
-    except Exception:
-        return False
-
-
-def _click_previous(page) -> bool:
-    patterns = [
-        re.compile(r"^Previous$", re.I),
-        re.compile(r"Previous (card|photo|video|story)", re.I),
-        re.compile(r"^(السابق|القصة السابقة)$", re.I),
-        re.compile(r"^Föregående", re.I),
-    ]
-    for pattern in patterns:
-        locator = page.get_by_role("button", name=pattern)
-        try:
-            count = locator.count()
-        except Exception:
-            count = 0
-        for index in range(count - 1, -1, -1):
-            button = locator.nth(index)
-            try:
-                if button.is_visible() and button.is_enabled():
-                    button.click(timeout=1500)
-                    return True
-            except Exception:
-                continue
-
-    try:
-        page.keyboard.press("ArrowLeft")
+        page.keyboard.press(key)
         return True
     except Exception:
         return False
@@ -209,12 +193,11 @@ def _click_previous(page) -> bool:
 def _wait_for_change(
     page, previous: str, responses: deque[dict], seen_urls: set[str]
 ) -> bool:
-    timeout_seconds = float(os.getenv("STORY_NEXT_TIMEOUT", "4.5"))
-    deadline = time.monotonic() + timeout_seconds
+    deadline = time.monotonic() + float(os.getenv("STORY_NEXT_TIMEOUT", "4.5"))
     while time.monotonic() < deadline:
         time.sleep(0.3)
         try:
-            current, _ = _current_fingerprint(page, responses, seen_urls)
+            current, _ = _current_snapshot(page, responses, seen_urls)
         except Exception:
             continue
         if current and current != previous:
@@ -223,12 +206,11 @@ def _wait_for_change(
 
 
 def _rewind_to_first(page, responses: deque[dict], max_items: int) -> None:
-    """Move from a shared middle card to the earliest available story card."""
     empty_seen: set[str] = set()
     unchanged_steps = 0
     for _ in range(max_items):
-        fingerprint, _ = _current_fingerprint(page, responses, empty_seen)
-        if not _click_previous(page):
+        fingerprint, _ = _current_snapshot(page, responses, empty_seen)
+        if not _click_direction(page, "previous"):
             break
         if _wait_for_change(page, fingerprint, responses, empty_seen):
             unchanged_steps = 0
@@ -238,17 +220,56 @@ def _rewind_to_first(page, responses: deque[dict], max_items: int) -> None:
                 break
 
 
-def extract_story_sequence(url: str) -> dict:
-    """Enumerate visible Facebook story cards in the browser viewer.
+def launch_story_browser(playwright, headless: bool = True):
+    """Launch bundled Chromium, then fall back to installed Edge or Chrome."""
+    preferred = os.getenv("STORY_BROWSER_CHANNEL", "").strip().lower()
+    candidates: list[tuple[str, dict]] = []
 
-    Opens the story viewer, rewinds to the earliest available card, captures
-    each visible media item, advances to the next card, and stops at the end.
-    """
+    if preferred:
+        if preferred in {"chromium", "bundled", "default"}:
+            candidates.append(("Playwright Chromium", {}))
+        else:
+            candidates.append((preferred, {"channel": preferred}))
+
+    candidates.extend(
+        [
+            ("Playwright Chromium", {}),
+            ("Microsoft Edge", {"channel": "msedge"}),
+            ("Google Chrome", {"channel": "chrome"}),
+        ]
+    )
+
+    unique: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+    for label, kwargs in candidates:
+        key = str(kwargs)
+        if key not in seen:
+            seen.add(key)
+            unique.append((label, kwargs))
+
+    errors: list[str] = []
+    for label, kwargs in unique:
+        try:
+            browser = playwright.chromium.launch(headless=headless, **kwargs)
+            return browser, label
+        except Exception as exc:
+            errors.append(f"{label}: {_compact_error(exc, 260)}")
+
+    details = " | ".join(errors)
+    raise BrowserStoryError(
+        "تعذر فتح Chromium أو Microsoft Edge أو Google Chrome. "
+        "شغّل repair_browser.bat ثم أعد المحاولة. "
+        f"التفاصيل: {details}"
+    )
+
+
+def extract_story_sequence(url: str) -> dict:
+    """Open the Facebook viewer and enumerate all visible story cards."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise BrowserStoryError(
-            "مكتبة Playwright غير مثبتة، لذلك تعذر فحص جميع أجزاء الستوري."
+            "مكتبة Playwright غير مثبتة. شغّل repair_browser.bat ثم أعد المحاولة."
         ) from exc
 
     headless = os.getenv("STORY_BROWSER_HEADLESS", "1") != "0"
@@ -257,10 +278,11 @@ def extract_story_sequence(url: str) -> dict:
     responses: deque[dict] = deque(maxlen=250)
     seen_urls: set[str] = set()
     items: list[dict] = []
+    browser_name = "unknown"
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=headless)
+            browser, browser_name = launch_story_browser(playwright, headless=headless)
             context = browser.new_context(
                 locale="en-US",
                 user_agent=(
@@ -308,7 +330,7 @@ def extract_story_sequence(url: str) -> dict:
 
             if "/login" in page.url.lower():
                 raise BrowserStoryError(
-                    "Facebook طلب تسجيل الدخول. أضف ملف cookies.txt صالحًا ثم أعد التحليل."
+                    "Facebook طلب تسجيل الدخول. أضف cookies.txt صالحًا ثم أعد التحليل."
                 )
 
             _rewind_to_first(page, responses, max_items)
@@ -316,9 +338,7 @@ def extract_story_sequence(url: str) -> dict:
 
             unchanged_steps = 0
             for _ in range(max_items):
-                fingerprint, snapshot = _current_fingerprint(
-                    page, responses, seen_urls
-                )
+                fingerprint, snapshot = _current_snapshot(page, responses, seen_urls)
                 if snapshot and _looks_like_direct_media(snapshot.get("url")):
                     media_url = snapshot["url"]
                     if media_url not in seen_urls:
@@ -336,17 +356,13 @@ def extract_story_sequence(url: str) -> dict:
                                     snapshot.get("content_type", ""),
                                 ),
                                 "thumbnail": snapshot.get("thumbnail"),
-                                "http_headers": {
-                                    "Referer": snapshot["page_url"],
-                                },
+                                "http_headers": {"Referer": snapshot["page_url"]},
                             }
                         )
 
-                if not _click_next(page):
+                if not _click_direction(page, "next"):
                     break
-                if _wait_for_change(
-                    page, fingerprint, responses, seen_urls
-                ):
+                if _wait_for_change(page, fingerprint, responses, seen_urls):
                     unchanged_steps = 0
                 else:
                     unchanged_steps += 1
@@ -360,17 +376,20 @@ def extract_story_sequence(url: str) -> dict:
         raise
     except Exception as exc:
         raise BrowserStoryError(
-            "تعذر تشغيل متصفح فحص الستوري. تأكد من تثبيت Chromium الخاص بـ Playwright."
+            "تم فتح المتصفح ولكن فشل فحص صفحة Facebook. "
+            f"المتصفح: {browser_name}. التفاصيل: {_compact_error(exc)}"
         ) from exc
 
     if not items:
         raise BrowserStoryError(
-            "لم يتمكن المتصفح من التقاط عناصر الستوري. قد تحتاج إلى cookies.txt صالح."
+            "تم تشغيل المتصفح، لكن لم يتم التقاط عناصر الستوري. "
+            "قد تحتاج إلى cookies.txt صالح أو قد تكون القصة منتهية. "
+            f"المتصفح المستخدم: {browser_name}."
         )
 
     return {
         "title": title,
-        "method": "playwright-story-sequence",
+        "method": f"playwright-story-sequence:{browser_name}",
         "items": items,
         "sequence_url": normalized_url,
     }
