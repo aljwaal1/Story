@@ -9,14 +9,16 @@ from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from downloader.media_downloader import DownloadError, download_item
-from extractor.facebook_story import StoryExtractionError, discover_media
 from extractor.media_parser import normalize_items
+from extractor.universal_media import MediaExtractionError, discover_media
 from merger.ffmpeg_merge import MergeError, merge_with_ffmpeg
 from storage import JobNotFoundError, JobStore
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.getenv("STORY_DATA_DIR", BASE_DIR / "data"))
-DOWNLOADS_DIR = Path(os.getenv("STORY_DOWNLOADS_DIR", BASE_DIR / "downloads"))
+DATA_DIR = Path(os.getenv("MEDIA_DATA_DIR", os.getenv("STORY_DATA_DIR", BASE_DIR / "data")))
+DOWNLOADS_DIR = Path(
+    os.getenv("MEDIA_DOWNLOADS_DIR", os.getenv("STORY_DOWNLOADS_DIR", BASE_DIR / "downloads"))
+)
 
 app = Flask(
     __name__,
@@ -49,7 +51,7 @@ def _download_one(job_id: str, order: int) -> tuple[Path, dict]:
     job = store.get_job(job_id)
     item = next((entry for entry in job["items"] if entry["order"] == order), None)
     if not item:
-        raise JobNotFoundError("عنصر القصة المطلوب غير موجود.")
+        raise JobNotFoundError("ملف الوسائط المطلوب غير موجود.")
 
     folder = _job_download_dir(job_id)
     existing_name = item.get("downloaded_name")
@@ -72,32 +74,30 @@ def index():
 
 
 @app.post("/api/analyze")
-def analyze_story():
-    url = str(_payload().get("url", "")).strip()
-    if not url:
-        return jsonify({"ok": False, "error": "أدخل رابط القصة أولًا."}), 400
+def analyze_media():
+    payload = _payload()
+    url = str(payload.get("url", "")).strip()
+    mode = str(payload.get("mode", "video")).strip().lower()
+    quality = str(payload.get("quality", "best")).strip().lower()
 
-    discovered = discover_media(url)
+    if not url:
+        return jsonify({"ok": False, "error": "أدخل رابط المحتوى أولًا."}), 400
+
+    discovered = discover_media(url, mode=mode, quality=quality)
     items = normalize_items(discovered.get("items", []))
     if not items:
-        raise StoryExtractionError(
-            "لم يتم العثور على صور أو فيديوهات قابلة للتحميل. "
-            "قد تكون القصة منتهية أو خاصة أو تحتاج إلى ملف cookies.txt."
+        raise MediaExtractionError(
+            "لم يتم العثور على وسائط قابلة للتنزيل بدون تسجيل دخول."
         )
 
     job = store.create_job(
         source_url=url,
         items=items,
         extraction_method=discovered.get("method", "unknown"),
-        title=discovered.get("title") or "قصة فيسبوك",
+        title=discovered.get("title") or "تنزيل وسائط",
     )
-    return jsonify(
-        {
-            "ok": True,
-            "job": job,
-            "warning": discovered.get("sequence_warning"),
-        }
-    )
+    job["platform"] = discovered.get("platform")
+    return jsonify({"ok": True, "job": job})
 
 
 @app.get("/api/jobs/<job_id>")
@@ -132,9 +132,9 @@ def download_all(job_id: str):
             failures.append(f"العنصر {item['order']}: {exc}")
 
     if not files:
-        raise DownloadError("تعذر تحميل أي عنصر من القصة.")
+        raise DownloadError("تعذر تحميل أي ملف من الرابط.")
 
-    archive_path = folder / f"story_{job_id}.zip"
+    archive_path = folder / f"media_{job_id}.zip"
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in files:
             archive.write(path, arcname=path.name)
@@ -164,7 +164,7 @@ def merge_videos(job_id: str):
         path, _ = _download_one(job_id, item["order"])
         video_paths.append(path)
 
-    output = folder / f"story_{job_id}_merged.mp4"
+    output = folder / f"media_{job_id}_merged.mp4"
     merged_path = merge_with_ffmpeg(video_paths, output)
     store.add_event(job_id, "merge", f"تم دمج {len(video_paths)} مقاطع")
     return send_file(
@@ -188,7 +188,7 @@ def delete_job(job_id: str):
     return jsonify({"ok": True})
 
 
-@app.errorhandler(StoryExtractionError)
+@app.errorhandler(MediaExtractionError)
 @app.errorhandler(DownloadError)
 @app.errorhandler(MergeError)
 @app.errorhandler(JobNotFoundError)
@@ -209,7 +209,7 @@ def handle_unexpected_error(exc: Exception):
 
 if __name__ == "__main__":
     app.run(
-        host=os.getenv("STORY_HOST", "127.0.0.1"),
-        port=int(os.getenv("STORY_PORT", "5000")),
-        debug=os.getenv("STORY_DEBUG", "0") == "1",
+        host=os.getenv("MEDIA_HOST", os.getenv("STORY_HOST", "127.0.0.1")),
+        port=int(os.getenv("MEDIA_PORT", os.getenv("STORY_PORT", "5000"))),
+        debug=os.getenv("MEDIA_DEBUG", os.getenv("STORY_DEBUG", "0")) == "1",
     )
