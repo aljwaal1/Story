@@ -39,7 +39,13 @@ class JobStore:
         )
         temp_path.replace(path)
 
-    def create_job(self, source_url: str, items: list[dict], extraction_method: str, title: str) -> dict:
+    def create_job(
+        self,
+        source_url: str,
+        items: list[dict],
+        extraction_method: str,
+        title: str,
+    ) -> dict:
         with self._lock:
             job_id = uuid.uuid4().hex[:12]
             created_at = self._now()
@@ -52,9 +58,16 @@ class JobStore:
                 "updated_at": created_at,
                 "item_count": len(items),
                 "video_count": sum(item.get("type") == "video" for item in items),
+                "audio_count": sum(item.get("type") == "audio" for item in items),
                 "image_count": sum(item.get("type") == "image" for item in items),
                 "items": items,
-                "events": [{"type": "analyze", "message": f"تم اكتشاف {len(items)} عنصرًا", "at": created_at}],
+                "events": [
+                    {
+                        "type": "analyze",
+                        "message": f"تم اكتشاف {len(items)} عنصرًا",
+                        "at": created_at,
+                    }
+                ],
             }
             self._write(self._path(job_id), job)
             return job
@@ -76,7 +89,7 @@ class JobStore:
                     job["items"][index] = replacement
                     break
             else:
-                raise JobNotFoundError("عنصر القصة المطلوب غير موجود.")
+                raise JobNotFoundError("ملف الوسائط المطلوب غير موجود.")
             job["updated_at"] = self._now()
             self._write(self._path(job_id), job)
             return job
@@ -85,7 +98,9 @@ class JobStore:
         with self._lock:
             job = self.get_job(job_id)
             now = self._now()
-            job.setdefault("events", []).append({"type": event_type, "message": message, "at": now})
+            job.setdefault("events", []).append(
+                {"type": event_type, "message": message, "at": now}
+            )
             job["updated_at"] = now
             self._write(self._path(job_id), job)
             return job
@@ -97,13 +112,20 @@ class JobStore:
                 job = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            jobs.append({
-                "id": job.get("id"), "title": job.get("title"), "source_url": job.get("source_url"),
-                "created_at": job.get("created_at"), "updated_at": job.get("updated_at"),
-                "item_count": job.get("item_count", len(job.get("items", []))),
-                "video_count": job.get("video_count", 0), "image_count": job.get("image_count", 0),
-                "events": job.get("events", [])[-3:],
-            })
+            jobs.append(
+                {
+                    "id": job.get("id"),
+                    "title": job.get("title"),
+                    "source_url": job.get("source_url"),
+                    "created_at": job.get("created_at"),
+                    "updated_at": job.get("updated_at"),
+                    "item_count": job.get("item_count", len(job.get("items", []))),
+                    "video_count": job.get("video_count", 0),
+                    "audio_count": job.get("audio_count", 0),
+                    "image_count": job.get("image_count", 0),
+                    "events": job.get("events", [])[-3:],
+                }
+            )
         jobs.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
         return jobs[: max(1, min(limit, 100))]
 
