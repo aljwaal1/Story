@@ -25,7 +25,7 @@
         return payload;
     }
     function setLoading(isLoading) {
-        analyzeButton.disabled = isLoading; input.disabled = isLoading; modeInput.disabled = isLoading; qualityInput.disabled = isLoading;
+        analyzeButton.disabled = isLoading; input.disabled = isLoading; modeInput.disabled = isLoading; qualityInput.disabled = isLoading || modeInput.value === "audio";
         analyzeButton.querySelector("span").textContent = isLoading ? "جارٍ تحليل الرابط..." : "تحليل الرابط";
         analyzeButton.classList.toggle("loading", isLoading);
     }
